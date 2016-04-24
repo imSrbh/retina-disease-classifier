@@ -23,6 +23,10 @@ const int S1 = 5;
 const int S2 = 10;
 const int KERNEL_BRANCH_SIZE = 5;
 
+const int MAX_CLUSTERING_ITERATIONS = 200;
+const int MAX_CLUSTERING_DISTANCE = 40;
+const double MAX_MACULA_ECCENTRICITY = 0.5;
+
 const int BG_MASK_BY_CONTOURS = 0;
 const int BG_MASK_BY_LOCAL_VARIANCE = 1;
 
@@ -179,6 +183,7 @@ cv::Mat shadeCorrection(cv::Mat image, double ratio = std::numeric_limits<double
 
     return image;
 }
+
 /*  @brief      Computes standard local variation of matrix of input image.
  *  @param      image to be processed
  *  @param      mask of skipped image points, its non-zero elements indicate which matrix elements need to be processed
@@ -879,7 +884,7 @@ void CallBackFunc(int event, int x, int y, int, void* data) {
  * @param       index of contour in array
  * @return      structure of features
  */
-ContourFeatures getContourFeature(std::vector<std::vector<cv::Point>> contours, cv::Mat image, int index, double *ratio = nullptr) {
+ContourFeatures getContourFeature(std::vector<std::vector<cv::Point>> contours, cv::Mat image, int index, double ratio = std::numeric_limits<double>::infinity()) {
 
     // because of energy computing we image with all contours filled
     cv::Mat contoursMask(image.size(), CV_8UC1, cv::Scalar(0, 0, 0));
@@ -941,10 +946,10 @@ ContourFeatures getContourFeature(std::vector<std::vector<cv::Point>> contours, 
     int histMax = 256;
     features.entropy = computeEntropy(intensity, histMax, elementMask);
 
-    if (ratio == nullptr) {
+    if (ratio == std::numeric_limits<double>::infinity()) {
         features.ratio = computeRatio({image.cols, image.rows});
     } else {
-        features.ratio = *ratio;
+        features.ratio = ratio;
     }
 
     return features;
@@ -1013,6 +1018,164 @@ void learn(std::string output, cv::Mat image, int type) {
 
 }
 
+/* @brief       Computes first eccentricity of ellipse.
+ * @param       rectangle which describes ellipse
+ * @return      double value of eccentricity
+ */
+double getEccentricity(cv::RotatedRect rectangle) {
+    if(rectangle.size.height > rectangle.size.width) {
+        return (double) (std::sqrt((std::pow(rectangle.size.height, 2) - std::pow(rectangle.size.width, 2))) / (rectangle.size.height));
+    } else {
+        return (double) (std::sqrt((std::pow(rectangle.size.width, 2) - std::pow(rectangle.size.height, 2))) / (rectangle.size.width));
+
+    }
+}
+
+/* @brief       Finds ellipse, which describes macula in retina.
+ * @param       image to be processed
+ * @param       ratio is optional parameter, if not specified, new is computed by image parameter
+ * @return      rotated rectangle which describe macula ellipse or zero-sized rectangle if no macula is found
+ */
+cv::RotatedRect getMaculaEllipse(cv::Mat image, double ratio = std::numeric_limits<double>::infinity()) {
+
+    if (ratio == std::numeric_limits<double>::infinity()) {
+        ratio = computeRatio({image.cols, image.rows});
+    }
+
+    // macula appears most contrasted in red channel
+    std::vector<cv::Mat> bgrChannel;
+    split(image, bgrChannel);
+    cv::Mat redChannel = bgrChannel[2];
+
+    // remove noise details by applying blur filter
+    int size = ((int) (30 * ratio) | 1);
+    cv::blur(redChannel, redChannel, {size, size});
+
+    // do multilevel thresholding, macula appears most between value 100 - 230
+    std::vector<cv::RotatedRect> minEllipse;
+    for (int k = 100; k < 230; ++k) {
+        cv::Mat threshold_output;
+        std::vector<std::vector<cv::Point>> contours;
+        std::vector<cv::Vec4i> hierarchy;
+
+        // detect edges using Threshold
+        threshold(redChannel, threshold_output, k, 255, cv::THRESH_BINARY);
+
+        // to exclude ellipses of whole retina,flood fill background
+        cv::floodFill(threshold_output, {0, 0}, 255);
+
+        // find contours
+        findContours(threshold_output, contours, hierarchy, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, cv::Point(0, 0));
+
+        // for each contour find rotated rectangles and ellipses
+        for (int i = 0; i < contours.size(); i++) {
+            if (contours[i].size() > 5) {
+                auto elem = fitEllipse(cv::Mat(contours[i]));
+
+                // check if they are ellipses and not circles by eccentricity value
+                if (getEccentricity(elem) > MAX_MACULA_ECCENTRICITY) {
+                    minEllipse.push_back(elem);
+                }
+            }
+        }
+    }
+
+    if (minEllipse.size() > 0) {
+
+        // collect ellipse to group with similar centroid
+        std::vector<cv::Point2f> centers = {minEllipse[0].center};
+        std::vector<int> belong(minEllipse.size(), 0);
+        int iteration = 0;
+        bool change;
+
+        do {
+            change = false;
+            for (int i = 0; i < minEllipse.size(); i++) {
+
+                // search for the nearest group
+                int best = belong[i];
+                double bestDistance = cv::norm(minEllipse[i].center - centers[best]);
+                for (int j = 0; j < centers.size(); ++j) {
+                    auto dist = cv::norm(minEllipse[i].center - centers[j]);
+                    if (dist < bestDistance) {
+                        bestDistance = dist;
+                        best = j;
+                        change = true;
+                    }
+                }
+
+                // if is centroid of nearest group still too far away, create new group with this poin
+                if (cv::norm(minEllipse[i].center - centers[best]) > (ratio * MAX_CLUSTERING_DISTANCE)) {
+                    centers.push_back(minEllipse[i].center);
+                    belong[i] = centers.size() - 1;
+                } else {
+                    belong[i] = best;
+                }
+            }
+
+            // get members of each group
+            std::vector<std::vector<cv::Point2f>> members(belong.size());
+            for (int l = 0; l < belong.size(); ++l) {
+                members[belong[l]].push_back(minEllipse[l].center);
+            }
+
+            // for each group re-calculate its centroid
+            for (int k = 0; k < centers.size(); ++k) {
+                centers[k] = {0, 0};
+                for (int i = 0; i < members[k].size(); i++) {
+                    centers[k] += members[k][i];
+                }
+                centers[k].x /= members[k].size();
+                centers[k].y /= members[k].size();
+            }
+
+        } while (change && iteration++ < MAX_CLUSTERING_ITERATIONS);
+
+        // get ellipses of each final group and the most numerous group
+        std::vector<std::vector<cv::RotatedRect>> members(belong.size());
+        auto max = 0;
+        for (int l = 0; l < belong.size(); ++l) {
+            members[belong[l]].push_back(minEllipse[l]);
+            if (members[belong[l]].size() > members[max].size()) {
+                max = belong[l];
+            }
+        }
+
+        // find the largest ellipse in the most numerous group
+        auto largest = 0;
+        for (int i = 0; i < members[max].size(); i++) {
+            if (members[max][i].size.area() > members[max][largest].size.area()) { largest = i; }
+        }
+
+        return members[max][largest];
+    } else {
+        return cv::RotatedRect();
+    }
+}
+
+/* @brief       Creates mask of macula.
+ * @param       image to be processed
+ * @param       reduction is optional parameter, define reduction of dimensions of foreground image
+ * @param       ratio is optional parameter, if not specified, new is computed by image parameter
+ * @return      matrix with same size as original image, zero element are macula elements
+ */
+cv::Mat getMaculaMask(cv::Mat image, int reduction, double ratio = std::numeric_limits<double>::infinity()) {
+
+    if(ratio == std::numeric_limits<double>::infinity()){
+        ratio = computeRatio({image.cols, image.rows});
+    }
+
+    cv::RotatedRect macula = getMaculaEllipse(image, ratio);
+
+    cv::Mat mask(image.rows, image.cols, CV_8UC1, cv::Scalar(255, 255, 255));
+    cv::ellipse( mask, macula, cv::Scalar(0, 0, 0), CV_FILLED, 8 );
+    if(reduction > 0) {
+        cv::ellipse( mask, macula, cv::Scalar(0, 0, 0), reduction, 8 );
+    }
+
+    return mask;
+}
+
 int main( int argc, char** argv ) {
 
     cv::Mat image;
@@ -1027,7 +1190,7 @@ int main( int argc, char** argv ) {
     copyMakeBorder(image, image, 50, 50, 50, 50, cv::BORDER_CONSTANT, 0);
     showImage("image", image);
 
-    //learn("/home/janko/ClionProjects/old/test.txt", image, LEARN_EXUDATE);
+    showImage("macula mask", getMaculaMask(image, 0));
 
     cv::waitKey(0);
     return 0;
