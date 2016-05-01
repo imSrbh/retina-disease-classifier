@@ -20,10 +20,10 @@ void showImage(String title, Mat image){
     uchar col = (showImageCount) % 6;
     showImageCount++;
     namedWindow(title, WINDOW_NORMAL );
-    resizeWindow(title, 300,240);
+    //resizeWindow(title, 300,240);
     moveWindow(title, 50 + 310 * col, 30 + 265 * row);
     imshow(title, image);
-    cv::waitKey(3);
+    cv::waitKey(10);
 }
 
 void showImage(Mat image, String title){

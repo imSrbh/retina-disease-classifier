@@ -366,7 +366,7 @@ cv::Point getOpticDiscCenter(cv::Mat image, int subImageSize, double ratio = std
     cv::Mat shadeCorrectedImage = shadeCorrection(luminanceChannel, ratio);
 
     // get background mask to exclude retina border pixels
-    cv::Mat mask = getBackgroundMask(shadeCorrectedImage, 0, 0, ratio);
+    cv::Mat mask = getBackgroundMask(shadeCorrectedImage, 0, 5, ratio);
 
     // get pixel with maximum value of local variation
     cv::Point maxLocalVariationPosition;
@@ -1176,10 +1176,97 @@ cv::Mat getMaculaMask(cv::Mat image, int reduction, double ratio = std::numeric_
     return mask;
 }
 
+/* @brief       Creates mask of blood vessels in retina image. Gabor filter is used.
+ * @param       image to be processed
+ * @param       ratio is optional parameter, if not specified, new is computed by image parameter
+ * @return      matrix with same size as original image, zero element are blood vessels elements
+ */
+cv::Mat getBloodVesselsMask(cv::Mat image, double ratio = std::numeric_limits<double>::infinity()) {
+
+    if (ratio == std::numeric_limits<double>::infinity()) {
+        cv::Mat backgroundMask = getBackgroundMask(image, 0, 0, ratio);
+        std::vector<std::vector<cv::Point>> contours;
+        findContours(backgroundMask, contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
+        auto boundRect = boundingRect(cv::Mat(contours[0]));
+        ratio = computeRatio(boundRect.size(), {659, 655});
+    }
+
+    // blood vessels appears most contrasted in inverted green channel
+    std::vector<cv::Mat> bgrChannel;
+    split(image, bgrChannel);
+    cv::Mat greenChannel = bgrChannel[1];
+
+    cv::Mat backgroundMask = getBackgroundMask(greenChannel, 0, 0, ratio);
+
+    // invert image
+    cv::subtract(cv::Scalar::all(255), greenChannel, greenChannel);
+
+    cv::Mat greenChannel32F;
+    greenChannel32F = cv::Mat::zeros(greenChannel.rows, greenChannel.cols, CV_32FC1);
+    greenChannel.convertTo(greenChannel32F, CV_32F, 1.0 / 255, 0);
+
+    cv::Mat gaborFilterResponse;
+    gaborFilterResponse = cv::Mat::zeros(image.rows, image.cols, CV_8UC1);
+
+    // rotate gabor kernel to find vessels in all angles
+    for (int i = 0; i < 180; i += 30) {
+        //ratio = 1;
+        // compute width and height of kernel, i.e.: "|" shape is smaller width and bigger height and for "__" vice versa
+        int size = 17 * ratio, kernelWidth = size, kernelHeight = size;
+        double divisor = 30 / ratio;
+        if(i <= 90){
+            kernelHeight -= i / divisor;
+            kernelWidth -= 3 * ratio - (i / divisor);
+        } else {
+            kernelWidth -= (i % 90) / divisor;
+            kernelHeight -= 3 * ratio - ((i % 90) / divisor);
+        }
+
+        cv::Mat kernel =  cv::getGaborKernel({kernelWidth, kernelHeight}, 4.5 * ratio, i / 180. * M_PI, 9.8 * ratio, 1.3, CV_PI * 2);
+        cv::Mat response;
+
+        // proceed 2D filter of image by generated gabor kernel
+        cv::filter2D(greenChannel32F, response, CV_32F, kernel);
+        response.convertTo(response, CV_8U, 255);
+
+        // add actual gabor filter result to total
+        addWeighted( gaborFilterResponse, 0.5, response, 0.5, 0.0, gaborFilterResponse);
+    }
+
+    cv::Mat gaborThresh;
+    threshold(gaborFilterResponse, gaborThresh, 5, 255, cv::THRESH_BINARY_INV);
+
+    // find center of optic disc
+    cv::Mat opticDiscMask = getOpticDiscMask(image, 5, ratio);
+    cv::Mat mask, vessels;
+    bitwise_and(gaborThresh, opticDiscMask, mask);
+    cv::Mat distanceMask;
+    bitwise_not(mask, distanceMask);
+    distanceTransform(distanceMask, distanceMask, CV_DIST_L2, 3);
+    double min, max;
+    cv::Point min_loc, max_loc;
+    cv::minMaxLoc(distanceMask, &min, &max, &min_loc, &max_loc);
+    normalize(mask, vessels, 0, 50,  cv::NORM_MINMAX);
+
+    // use just those lines / objects, which goes from the optic disc
+    floodFill(vessels, max_loc, 255);
+    threshold(vessels, vessels, 254, 255, cv::THRESH_BINARY_INV);
+    bitwise_or(gaborThresh, vessels, vessels);
+
+    // remove optic disc from mask
+    bitwise_and(vessels, backgroundMask, vessels);
+
+    return vessels;
+}
+
+
+
+
 int main( int argc, char** argv ) {
 
     cv::Mat image;
-    image = cv::imread(argv[1], 1);
+    //image = cv::imread(argv[1], 1);
+    image = cv::imread("/home/janko/ClionProjects/retinaDiseaseClasifier/Retina images/retina11-small.jpg", 1);
 
     if(!image.data ) {
         std::cout << "WARNING: No image data to process ..." << std::endl;
@@ -1187,10 +1274,11 @@ int main( int argc, char** argv ) {
     }
 
     // make black borders of image so background mask can be extracted even if image contain cutout of retina
-    copyMakeBorder(image, image, 50, 50, 50, 50, cv::BORDER_CONSTANT, 0);
+    // copyMakeBorder(image, image, 50, 50, 50, 50, cv::BORDER_CONSTANT, 0);
     showImage("image", image);
 
-    showImage("macula mask", getMaculaMask(image, 0));
+    cv::Mat x = getBloodVesselsMask(image);
+    showImage("x2", x);
 
     cv::waitKey(0);
     return 0;
