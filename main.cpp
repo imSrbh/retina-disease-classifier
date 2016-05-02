@@ -1178,28 +1178,29 @@ cv::Mat getMaculaMask(cv::Mat image, int reduction, double ratio = std::numeric_
 
 /* @brief       Creates mask of blood vessels in retina image. Gabor filter is used.
  * @param       image to be processed
- * @param       ratio is optional parameter, if not specified, new is computed by image parameter
+ * @param       opticDiscMask is mask in which zero elements are optic disc elements, if empty == cv::Mat(), new is computed by image
+ * @param       ratio is optional parameter, if not specified, new is computed by image
  * @return      matrix with same size as original image, zero element are blood vessels elements
  */
-cv::Mat getBloodVesselsMask(cv::Mat image, double ratio = std::numeric_limits<double>::infinity()) {
+cv::Mat getBloodVesselsMask(cv::Mat image, cv::Mat opticDiscMask, double ratio = std::numeric_limits<double>::infinity()) {
+
+    cv::Mat backgroundMask = getBackgroundMask(image, 0, 0);
 
     if (ratio == std::numeric_limits<double>::infinity()) {
-        cv::Mat backgroundMask = getBackgroundMask(image, 0, 0, ratio);
         std::vector<std::vector<cv::Point>> contours;
-        findContours(backgroundMask, contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
-        auto boundRect = boundingRect(cv::Mat(contours[0]));
-        ratio = computeRatio(boundRect.size(), {659, 655});
+        findContours(backgroundMask.clone(), contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
+        cv::Rect boundRect = boundingRect(cv::Mat(contours[0]));
+        ratio = computeRatio(boundRect.size(), {660, 660});
     }
 
     // blood vessels appears most contrasted in inverted green channel
     std::vector<cv::Mat> bgrChannel;
     split(image, bgrChannel);
     cv::Mat greenChannel = bgrChannel[1];
-
-    cv::Mat backgroundMask = getBackgroundMask(greenChannel, 0, 0, ratio);
-
-    // invert image
     cv::subtract(cv::Scalar::all(255), greenChannel, greenChannel);
+
+    cv::Mat structureElem = getStructuringElement(CV_SHAPE_ELLIPSE, cv::Size(15 * ratio, 15 * ratio)), morfGreenChannel;
+    morphologyEx(greenChannel, greenChannel, cv::MORPH_CLOSE, structureElem);
 
     cv::Mat greenChannel32F;
     greenChannel32F = cv::Mat::zeros(greenChannel.rows, greenChannel.cols, CV_32FC1);
@@ -1222,7 +1223,7 @@ cv::Mat getBloodVesselsMask(cv::Mat image, double ratio = std::numeric_limits<do
             kernelHeight -= 3 * ratio - ((i % 90) / divisor);
         }
 
-        cv::Mat kernel =  cv::getGaborKernel({kernelWidth, kernelHeight}, 4.5 * ratio, i / 180. * M_PI, 9.8 * ratio, 1.3, CV_PI * 2);
+        cv::Mat kernel =  cv::getGaborKernel({kernelWidth, kernelHeight}, 4.5 * ratio, i / 180. * M_PI, 9.9 * ratio, 1.3, CV_PI * 2);
         cv::Mat response;
 
         // proceed 2D filter of image by generated gabor kernel
@@ -1237,7 +1238,9 @@ cv::Mat getBloodVesselsMask(cv::Mat image, double ratio = std::numeric_limits<do
     threshold(gaborFilterResponse, gaborThresh, 5, 255, cv::THRESH_BINARY_INV);
 
     // find center of optic disc
-    cv::Mat opticDiscMask = getOpticDiscMask(image, 5, ratio);
+    if(opticDiscMask.empty()){
+        opticDiscMask = getOpticDiscMask(image, 5, ratio);
+    }
     cv::Mat mask, vessels;
     bitwise_and(gaborThresh, opticDiscMask, mask);
     cv::Mat distanceMask;
@@ -1259,14 +1262,95 @@ cv::Mat getBloodVesselsMask(cv::Mat image, double ratio = std::numeric_limits<do
     return vessels;
 }
 
+/* @brief       Finds contours of blood vessels in retina image. Local variation and morfological reconstruction are used.
+ * @param       image to be processed
+ * @param       ratio is optional parameter, if not specified, new is computed by image
+ * @return      vector of contours ( vector of points ) of hemorrhages
+ */
+std::vector<std::vector<cv::Point>> getHemorrhagesContours(cv::Mat image, double ratio = std::numeric_limits<double>::infinity()){
 
+    cv::Mat backgroundMask = getBackgroundMask(image, 0, 0);
+
+    if (ratio == std::numeric_limits<double>::infinity()) {
+        std::vector<std::vector<cv::Point>> contours;
+        findContours(backgroundMask.clone(), contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
+        cv::Rect boundRect = boundingRect(cv::Mat(contours[0]));
+        ratio = computeRatio(boundRect.size(), {660, 660});
+    }
+
+    // hemorrhages appears most contrasted in inverted green channel
+    std::vector<cv::Mat> bgrChannel;
+    split(image, bgrChannel);
+    cv::Mat greenChannel = bgrChannel[1];
+
+    // make background color value as mean color of retina
+    int meanColor = mean(greenChannel, backgroundMask)[0];
+    bitwise_not(backgroundMask, backgroundMask);
+    cv::Mat background = cv::Mat(greenChannel.size(), CV_8UC1, meanColor);
+    background.copyTo(greenChannel, backgroundMask);
+
+    // smooth optic disc and other bright lesions
+    cv::Mat structureElem = getStructuringElement(CV_SHAPE_ELLIPSE, cv::Size(S1 * ratio, S1 * ratio)), morfGreenChannel;
+    morphologyEx(greenChannel, morfGreenChannel, cv::MORPH_OPEN, structureElem);
+
+    // contrast enhancement to improve the contrast of lesions for easy detection using
+    cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(1, cv::Size(8 * ratio, 8 * ratio));
+    clahe->apply(morfGreenChannel, morfGreenChannel);
+
+    // invert image
+    bitwise_not(backgroundMask, backgroundMask);
+    cv::subtract(cv::Scalar::all(255), morfGreenChannel, morfGreenChannel);
+
+    // thresholding local variation image to extract candidate region, A1 is chosen in a very tolerant manner
+    cv::Mat localVariationImage = localVariation(morfGreenChannel, backgroundMask, 4 * ratio);
+    normalize(localVariationImage, localVariationImage, 0, 255, cv::NORM_MINMAX, CV_8UC1);
+    int A1 = 10;
+    threshold(localVariationImage, localVariationImage, A1, 255, cv::THRESH_BINARY );
+
+    // remove vessels from candidate regions
+    cv::Mat vesselsMask = getBloodVesselsMask(image, cv::Mat(), ratio);
+    structureElem = getStructuringElement(CV_SHAPE_ELLIPSE, cv::Size(4 * ratio, 4 * ratio));
+    erode(vesselsMask, vesselsMask, structureElem);
+    cv::Mat candidates; candidates = cv::Mat::zeros(vesselsMask.size(), CV_8UC1);
+    localVariationImage.copyTo(candidates, vesselsMask);
+
+    // create mask of candidate regions where all contours are filled
+    std::vector<std::vector<cv::Point>> contours;
+    findContours(candidates, contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
+    candidates = cv::Mat::zeros(image.rows, image.cols, CV_8UC3);
+    for( size_t i = 0; i< contours.size(); i++ ) {
+        drawContours( candidates, contours, (int)i, cv::Scalar(255,255,255), CV_FILLED, 0);
+    }
+    cvtColor(candidates, candidates, cv::COLOR_BGR2GRAY );
+
+    // remove noise and enlarge candidate regions in mask
+    erode(candidates, candidates, getStructuringElement(CV_SHAPE_ELLIPSE, cv::Size(3 * ratio, 3 * ratio)));
+    dilate(candidates, candidates, getStructuringElement(CV_SHAPE_ELLIPSE, cv::Size(6 * ratio, 6 * ratio)));
+
+    // set all the candidate regions to 0 in the original image
+    cv::Mat candidatesMask; candidatesMask = cv::Mat::ones(image.rows, image.cols, CV_8UC1);
+    cv::bitwise_not(candidates, candidates);
+    cv::subtract(cv::Scalar::all(255), greenChannel, greenChannel);
+    greenChannel.copyTo(candidatesMask, candidates);
+
+    // calculate the morphological reconstruction by dilation
+    cv::Mat reconstructedCandidates = morfologicalReconstruction(greenChannel, candidatesMask, structureElem, 0);
+
+    // apply a threshold operation to the difference between the original image and the reconstructed image
+    cv::Mat hemorrhages;
+    subtract(greenChannel, reconstructedCandidates, hemorrhages);
+    int A2 = 5;
+    threshold(hemorrhages, hemorrhages, A2, 255, cv::THRESH_BINARY );
+
+    findContours(hemorrhages, contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
+    return contours;
+}
 
 
 int main( int argc, char** argv ) {
 
     cv::Mat image;
-    //image = cv::imread(argv[1], 1);
-    image = cv::imread("/home/janko/ClionProjects/retinaDiseaseClasifier/Retina images/retina11-small.jpg", 1);
+    image = cv::imread(argv[1], 1);
 
     if(!image.data ) {
         std::cout << "WARNING: No image data to process ..." << std::endl;
@@ -1274,11 +1358,15 @@ int main( int argc, char** argv ) {
     }
 
     // make black borders of image so background mask can be extracted even if image contain cutout of retina
-    // copyMakeBorder(image, image, 50, 50, 50, 50, cv::BORDER_CONSTANT, 0);
+    copyMakeBorder(image, image, 50, 50, 50, 50, cv::BORDER_CONSTANT, 0);
     showImage("image", image);
 
-    cv::Mat x = getBloodVesselsMask(image);
-    showImage("x2", x);
+    auto contours = getHemorrhagesContours(image);
+    for(size_t i = 0; i< contours.size(); i++ ) {
+        drawContours(image, contours, (int)i, cv::Scalar(87, 165, 154), 1, 1);
+    }
+
+    showImage("hemorrhages", image);
 
     cv::waitKey(0);
     return 0;
