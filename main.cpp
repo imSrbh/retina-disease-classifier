@@ -6,14 +6,14 @@
     @version 1.0 16/3/16
 */
 
-#include <opencv2/core/core.hpp>
-#include <opencv2/highgui/highgui.hpp>
-#include <opencv2/imgproc/imgproc.hpp>
 #include <iostream>
 #include <iomanip>
 #include <fstream>
-#include <opencv2/video/background_segm.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/highgui.hpp>
 #include <opencv2/ml/ml.hpp>
+#include <cv.hpp>
+#include <sys/stat.h>
 
 #include "helpers.h"
 
@@ -34,63 +34,26 @@ const int LEARN_DRUSE = 0;
 const int LEARN_EXUDATE = 1;
 const int LEARN_HEMORRHAGE = 2;
 
-/*  @brief  Structure that represents settings of gabor filter kernel.
- */
-struct GaborFilterParams {
-    double sigma;
-    double theta;
-    double lambda;
-    double gamma;
-    double psi;
-    int kernelSize;
-};
+const std::string DB_FILE_HEADER_1 = "status, area, compactness, avg. boundary intensity, min. boundary intensity, max. boundary intensity, mean hue, mean saturation, mean intensity, mean gradient magnitude, energy, entropy, ratio";
+const std::string DB_FILE_HEADER_2 = "status, area, eccentricity, perimeter, compactness, aspect ratio, mean of GC, std. dev. of GC, mean of CEGC, std. dev. of CEGC, mean gradient magnitude, neighbour mean gradient magnitude, mean hue, mean saturation, mean value, std. dev. hue, std. dev. saturation, std. dev. value, energy, entropy";
 
-const std::vector<GaborFilterParams> GABOR_FILTER_BANK = {
+// include sigma, theta, lambda, gamma, psi, kernel size
+const std::vector<std::vector<double>> GABOR_FILTER_BANK = {
         {5,   0, 8,  1,     0, 70},
         {2,   0, 15, 0.7,   0, 70},
         {10,  0, 6,  0,     0, 70},
         {20,  0, 7,  0.15,  0, 30},
         {1.6, 0, 16, 0.16,  0, 30} };
 
-/*  @brief  Structure that represents features of contour/element.
+/*  @brief  Structure that encapsulates all attributes that are necessary in callbackFunction for learning.
  */
-struct ContourFeatures {
-    double area;
-    double compactness;
-    double avgBoundaryIntensity;
-    double minBoundaryIntensity;
-    double maxBoundaryIntensity;
-    double meanHue;
-    double meanSaturation;
-    double meanIntensity;
-    double meanGradientMagnitude;
-    double energy;
-    double entropy;
-    double ratio;
+struct CallBackParams {
+    std::vector<std::vector<cv::Point>> contours;
+    cv::Mat image;
+    std::string windowName;
+    std::vector<int> positive;
+    std::vector<int> negative;
 };
-
-/*  @brief      Converts druse struct to matrix of druse values.
- *  @param      structure of druse
- *  @return     one line matrix of eleven double values
- */
-cv::Mat druseToMat(ContourFeatures druse) {
-    double data[] = {
-            druse.area,
-            druse.compactness,
-            druse.avgBoundaryIntensity,
-            druse.minBoundaryIntensity,
-            druse.maxBoundaryIntensity,
-            druse.meanHue,
-            druse.meanSaturation,
-            druse.meanIntensity,
-            druse.meanGradientMagnitude,
-            druse.energy,
-            druse.entropy,
-            druse.ratio
-    };
-    cv::Mat result(1, 12, CV_64FC1, (double*)data);
-    return result;
-}
 
 /*  @brief     Creates structuring element in shape of hexagon where object image points are set to 255 and others are set to 0.
  *  @param     size is the length of one hexagon edge
@@ -307,19 +270,19 @@ cv::Mat getBackgroundMask(cv::Mat image, int method, int reduction, double ratio
 
         // find the contours
         std::vector<std::vector<cv::Point>> contours;
-        findContours(canny, contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
+        cv::findContours(canny, contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
 
         // draw contours to image, thickness depends on image size
         cv::Mat result; result = cv::Mat::zeros(image.rows, image.cols, CV_8UC3);
         for( size_t i = 0; i< contours.size(); i++ ) {
-            drawContours( result, contours, (int)i, cv::Scalar(255,255,255), 3 * ratio, 8);
+            cv::drawContours( result, contours, (int)i, cv::Scalar(255,255,255), 3 * ratio, 8);
         }
         cvtColor(result, computedImage, cv::COLOR_BGR2GRAY );
     }
 
     // find the largest contour of image, largest is object of retina
     std::vector<std::vector<cv::Point>> contours;
-    findContours(computedImage, contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
+    cv::findContours(computedImage, contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
 
     int largestArea = 0;
     int largestContourIndex = 0;
@@ -334,8 +297,8 @@ cv::Mat getBackgroundMask(cv::Mat image, int method, int reduction, double ratio
 
     // fill contour and return it as black / white image
     cv::Mat mask(image.rows, image.cols, CV_8UC1, cv::Scalar(0, 0, 0));
-    drawContours(mask, contours, largestContourIndex, cv::Scalar(255, 255, 255), (MASK_CONTOURS_LINE_THICKNESS + reduction) * ratio, 8);
-    floodFill(mask, cv::Point(5, 5), CV_RGB(255, 255, 255));
+    cv::drawContours(mask, contours, largestContourIndex, cv::Scalar(255, 255, 255), (MASK_CONTOURS_LINE_THICKNESS + reduction) * ratio, 8);
+    cv::floodFill(mask, cv::Point(5, 5), CV_RGB(255, 255, 255));
     bitwise_not(mask, mask);
 
     return mask;
@@ -385,7 +348,7 @@ cv::Point getOpticDiscCenter(cv::Mat image, int subImageSize, double ratio = std
     // find biggest object of threshold sub-image
     std::vector<std::vector<cv::Point>> contours;
     std::vector<cv::Vec4i> hierarchy;
-    findContours( opticDiscSubImage, contours, hierarchy, CV_RETR_CCOMP, CV_CHAIN_APPROX_SIMPLE );
+    cv::findContours( opticDiscSubImage, contours, hierarchy, CV_RETR_CCOMP, CV_CHAIN_APPROX_SIMPLE );
     int largestArea =0;
     int largestContourIndex =0;
     for( int i = 0; i< contours.size(); i++ ) {
@@ -399,11 +362,11 @@ cv::Point getOpticDiscCenter(cv::Mat image, int subImageSize, double ratio = std
 
     // draw the biggest object using previously computed contour index
     cv::Mat biggestTresholdParticle(opticDiscSubImage.rows, opticDiscSubImage.cols, CV_8UC1, cv::Scalar::all(0));
-    drawContours(biggestTresholdParticle, contours, largestContourIndex, cv::Scalar(255,255,255), CV_FILLED, 8, hierarchy );
+    cv::drawContours(biggestTresholdParticle, contours, largestContourIndex, cv::Scalar(255,255,255), CV_FILLED, 8, hierarchy );
 
     // find real optic disc center as max of largest object in distance transformation of threshold image
     cv::Mat distanceImage;
-    distanceTransform(biggestTresholdParticle, distanceImage, CV_DIST_L2, 3);
+    cv::distanceTransform(biggestTresholdParticle, distanceImage, CV_DIST_L2, 3);
     //normalize(distanceImage, distanceImage, 0, 1., cv::NORM_MINMAX);
     cv::Point min_loc, max_loc;
     minMaxLoc(distanceImage, &min, &max, &min_loc, &max_loc);
@@ -432,7 +395,7 @@ std::vector<std::vector<cv::Point>> getOpticDiscContours(cv::Mat image, double r
     std::vector<cv::Mat> bgrChannel;
     split(opticDiscSubImage, bgrChannel);
     cv::Mat redChannel = (bgrChannel[2]);
-    normalize(redChannel, redChannel, 0, 255, cv::NORM_MINMAX);
+    cv::normalize(redChannel, redChannel, 0, 255, cv::NORM_MINMAX);
 
 
 
@@ -451,8 +414,8 @@ std::vector<std::vector<cv::Point>> getOpticDiscContours(cv::Mat image, double r
 
     // create markers image to prevent over-segmentation in watershed transformation
     cv::Mat markers(morfRedChannel.size(),CV_8U,cv::Scalar(-1));
-    circle(markers, cv::Point(morfRedChannel.rows/2, morfRedChannel.cols/2), redChannel.rows/2,  cv::Scalar::all(1), 1);
-    circle(markers, cv::Point(morfRedChannel.rows/2, morfRedChannel.cols/2), 1,  cv::Scalar::all(2), 1);
+    cv::circle(markers, cv::Point(morfRedChannel.rows/2, morfRedChannel.cols/2), redChannel.rows/2,  cv::Scalar::all(1), 1);
+    cv::circle(markers, cv::Point(morfRedChannel.rows/2, morfRedChannel.cols/2), 1,  cv::Scalar::all(2), 1);
     markers.convertTo(markers, CV_32S);
 
     // to find contours, process watershed transformation and threshold of its result
@@ -705,12 +668,12 @@ std::vector<std::vector<cv::Point>> getDrusenContours(cv::Mat image, double rati
 
             // create gabor kernel and get response of filter
             auto gaborKernel = getGaborKernelImaginary(
-                    cv::Size(GABOR_FILTER_BANK[j].kernelSize, GABOR_FILTER_BANK[j].kernelSize),
-                    GABOR_FILTER_BANK[j].sigma,
-                    GABOR_FILTER_BANK[j].theta + i / 180. * M_PI,
-                    GABOR_FILTER_BANK[j].lambda,
-                    GABOR_FILTER_BANK[j].gamma,
-                    GABOR_FILTER_BANK[j].psi);
+                    cv::Size(GABOR_FILTER_BANK[j][5], GABOR_FILTER_BANK[j][5]),
+                    GABOR_FILTER_BANK[j][0],
+                    GABOR_FILTER_BANK[j][1] + i / 180. * M_PI,
+                    GABOR_FILTER_BANK[j][2],
+                    GABOR_FILTER_BANK[j][3],
+                    GABOR_FILTER_BANK[j][4]);
 
             cv::Mat filterResponse;
             cv::filter2D(preprocessedImage, filterResponse, CV_32F, gaborKernel);
@@ -801,15 +764,6 @@ float computeEntropy(cv::Mat image, int histMax, cv::Mat mask) {
     return entropy;
 }
 
-/*  @brief  Structure that encapsulates all attributes that are necessary in callbackFunction for learning.
- */
-struct CallBackParams {
-    std::vector<std::vector<cv::Point>> contours;
-    cv::Mat image;
-    std::string windowName;
-    std::vector<int> selectedIndexes;
-};
-
 /* @brief       Finds index of contour in which the point is.
  * @param       contours is pointer to array of elements contours
  * @param       dimensions are width and height of image from which contours are
@@ -835,56 +789,65 @@ int inContours(std::vector<std::vector<cv::Point>> *contours, cv::Size dimension
  * @param       data is pointer to structure which contain parameters of function, must be of CallBackParams type
  */
 void CallBackFunc(int event, int x, int y, int, void* data) {
-    if  ( event == cv::EVENT_LBUTTONDOWN ) {
+
+    // selection of true positive findings
+    if  ( event == cv::EVENT_LBUTTONDOWN || event == cv::EVENT_RBUTTONDOWN ) {
         CallBackParams *params = (CallBackParams *) data;
-        auto index = inContours(&(*params).contours, (*params).image.size(), {y, x});
+        auto contourIndex = inContours(&(*params).contours, (*params).image.size(), {y, x});
 
-        // if any object was selected and object was not already selected, store its index to array
-        if(index > -1 && std::find((*params).selectedIndexes.begin(), (*params).selectedIndexes.end(), index) == (*params).selectedIndexes.end()) {
-            (*params).selectedIndexes.push_back(index);
+        // if any contour was selected
+        if(contourIndex > -1) {
 
-            // highlight selected contours in image
-            cv::Mat image;
-            (*params).image.copyTo(image);
-            for (int i = 0; i < (*params).selectedIndexes.size(); ++i) {
-                drawContours( image, (*params).contours, (*params).selectedIndexes[i], cv::Scalar(255, 255, 255), CV_FILLED, 8);
-            }
-            cv::imshow((*params).windowName, image);
-            cv::waitKey(1);
-        }
-    } else if  ( event == cv::EVENT_RBUTTONDOWN ) {
-        CallBackParams *params = (CallBackParams *) data;
-        auto index = inContours(&(*params).contours, (*params).image.size(), {y, x});
-
-        if(index > -1) {
-
-            // if is clicked contour in array of selected contours, remove it from array
-            auto it = std::find((*params).selectedIndexes.begin(), (*params).selectedIndexes.end(), index);
-
-            if(it != (*params).selectedIndexes.end()){
-
-                (*params).selectedIndexes.erase(it);
+            // add or remove clicked contour to array
+            std::vector<int>::iterator positiveIt = std::find((*params).positive.begin(), (*params).positive.end(), contourIndex);
+            std::vector<int>::iterator negativeIt = std::find((*params).negative.begin(), (*params).negative.end(), contourIndex);
+            if(positiveIt != (*params).positive.end() && event == cv::EVENT_LBUTTONDOWN) {
+                (*params).positive.erase(positiveIt);
+            } else if(negativeIt != (*params).negative.end() && event == cv::EVENT_RBUTTONDOWN) {
+                (*params).negative.erase(negativeIt);
+            } else if(positiveIt != (*params).positive.end() && event == cv::EVENT_RBUTTONDOWN) {
+                (*params).positive.erase(positiveIt);
+                (*params).negative.push_back(contourIndex);
+            } else if(negativeIt != (*params).negative.end() && event == cv::EVENT_LBUTTONDOWN) {
+                (*params).negative.erase(negativeIt);
+                (*params).positive.push_back(contourIndex);
+            } else if(event == cv::EVENT_LBUTTONDOWN) {
+                (*params).positive.push_back(contourIndex);
+            } else {
+                (*params).negative.push_back(contourIndex);
             }
 
             // highlight selected contours in image
-            cv::Mat image;
+            cv::Mat image, filter((*params).image.size(), CV_8UC3, cv::Scalar(0, 0, 0));
             (*params).image.copyTo(image);
-            for (int i = 0; i < (*params).selectedIndexes.size(); ++i) {
-                drawContours( image, (*params).contours, (*params).selectedIndexes[i], cv::Scalar(255, 255, 255), CV_FILLED, 8);
+            for (int i = 0; i < (*params).positive.size(); ++i) {
+                drawContours(image, (*params).contours, (*params).positive[i], cv::Scalar(53, 232, 61), 1, 8);
+                drawContours(filter, (*params).contours, (*params).positive[i], cv::Scalar(-50, 50, -50), CV_FILLED, 8);
             }
+            for (int i = 0; i < (*params).negative.size(); ++i) {
+                drawContours(image, (*params).contours, (*params).negative[i], cv::Scalar(66, 41, 255), 2, 8);
+                drawContours(filter, (*params).contours, (*params).negative[i], cv::Scalar(-50, -50, 50), CV_FILLED, 8);
+
+            }
+            cv::add(image, filter, image);
             cv::imshow((*params).windowName, image);
             cv::waitKey(1);
         }
     }
 }
 
-/* @brief       Computes features of contours, i.e. area, compactness, average boundary intensity ...
+/* @brief       Computes features of bright object in image (druse or exudate)
  * @param       contours is pointer to array of elements contours
  * @param       image, in which contours were found
  * @param       index of contour in array
- * @return      structure of features
+ * @return      [area, compactness, average boundary intensity, maximum value of boundary intensity,
+ *               mean hue, mean saturation, mean intensity, mean gradient magnitude, energy, entropy, ratio]
  */
-ContourFeatures getContourFeature(std::vector<std::vector<cv::Point>> contours, cv::Mat image, int index, double ratio = std::numeric_limits<double>::infinity()) {
+std::vector<double> getBrightObjectFeature(std::vector<std::vector<cv::Point>> contours, cv::Mat image, int index, double ratio = std::numeric_limits<double>::infinity()) {
+
+    if (ratio == std::numeric_limits<double>::infinity()) {
+        ratio = computeRatio({image.cols, image.rows});
+    }
 
     // because of energy computing we image with all contours filled
     cv::Mat contoursMask(image.size(), CV_8UC1, cv::Scalar(0, 0, 0));
@@ -898,36 +861,33 @@ ContourFeatures getContourFeature(std::vector<std::vector<cv::Point>> contours, 
     elementImage = cv::Mat::zeros(image.size(), CV_8UC1);
     elementContoursImage = cv::Mat::zeros(image.size(), CV_8UC1);
 
-    ContourFeatures features;
-
     // compute sum of all pixels in element
     cv::drawContours(elementMask, contours, index, cv::Scalar(255), CV_FILLED, 8);
     image.copyTo(elementImage, elementMask);
-    features.area = cv::sum(elementImage)[0];
+    double area = cv::sum(elementImage)[0];
 
     // compute compactness of element
-    features.compactness = pow(cv::arcLength(contours[index], true), 2);
+    double compactness = pow(cv::arcLength(contours[index], true), 2) / ( 4 * CV_PI * area );
 
     //compute average boundary intensity
     drawContours(elementContoursMask, contours, index, cv::Scalar(255), 1, 8);
     cv::Mat intensity;
     cv::cvtColor(image, intensity, CV_BGR2GRAY);
     intensity.copyTo(elementContoursImage, elementContoursMask);
-    features.avgBoundaryIntensity = cv::mean(elementImage)[0];
+    double avgBoundaryIntensity = cv::mean(elementImage)[0];
 
     // compute maximum and minimum boundary intensity
     double maxBoundaryIntensity, minBoundaryIntensity;
     cv::minMaxLoc(elementContoursImage, &minBoundaryIntensity, &maxBoundaryIntensity);
-    features.maxBoundaryIntensity = maxBoundaryIntensity;
 
     // compute mean hue, saturation and intensity of element
     cv::Mat druseHSV, druseIntensity, druseHSVChannels[3];
     cv::cvtColor(elementImage, druseHSV, CV_BGR2HSV);
     cv::split(druseHSV, druseHSVChannels);
     intensity.copyTo(druseIntensity, elementMask);
-    features.meanHue = cv::mean(druseHSVChannels[0], elementMask)[0];
-    features.meanSaturation = cv::mean(druseHSVChannels[0], elementMask)[0];
-    features.meanIntensity = cv::mean(druseIntensity, elementMask)[0];
+    double meanHue = cv::mean(druseHSVChannels[0], elementMask)[0];
+    double meanSaturation = cv::mean(druseHSVChannels[0], elementMask)[0];
+    double meanIntensity = cv::mean(druseIntensity, elementMask)[0];
 
     // compute mean gradient magnitude
     cv::Mat grad_x, grad_y, abs_grad_x, abs_grad_y, grad;
@@ -937,86 +897,19 @@ ContourFeatures getContourFeature(std::vector<std::vector<cv::Point>> contours, 
     Sobel(druseIntensity, grad_y, CV_16S, 0, 1, 3, 1, 0, cv::BORDER_DEFAULT);
     convertScaleAbs(grad_y, abs_grad_y);
     addWeighted(abs_grad_x, 0.5, abs_grad_y, 0.5, 0, grad);
-    features.meanGradientMagnitude = cv::mean(grad, elementMask)[0];
+    double meanGradientMagnitude = cv::mean(grad, elementMask)[0];
 
     // compute energy of candidate region
-    features.energy = cv::sum(druseIntensity)[0] / cv::sum(contoursMask)[0];
+    double energy = cv::sum(druseIntensity)[0] / cv::sum(contoursMask)[0];
 
     // compute entropy = measure of randomness
     int histMax = 256;
-    features.entropy = computeEntropy(intensity, histMax, elementMask);
+    double entropy = computeEntropy(intensity, histMax, elementMask);
 
-    if (ratio == std::numeric_limits<double>::infinity()) {
-        features.ratio = computeRatio({image.cols, image.rows});
-    } else {
-        features.ratio = ratio;
-    }
-
-    return features;
+    return { area, compactness, avgBoundaryIntensity, maxBoundaryIntensity, meanHue,
+             meanSaturation, meanIntensity, meanGradientMagnitude, energy, entropy, ratio};
 }
 
-/* @brief       Computes features of selected contours from image and save it to file.
- * @param       output is path to file
- * @param       image, in which objects for selection are found
- * @param       type of object, allowed values are LEARN_DRUSE = 0, LEARN_EXUDATE = 1, LEARN_HEMORRHAGE = 2
- */
-void learn(std::string output, cv::Mat image, int type) {
-
-    std::vector<std::vector<cv::Point>> contours;
-    if(type == LEARN_DRUSE) {
-        contours = getDrusenContours(image);
-    } else if(type == LEARN_EXUDATE) {
-        contours = getExudatesContours(image);
-    } else if(type == LEARN_HEMORRHAGE) {
-        //TODO pridat volanie hladania obrysov hemoragii
-    } else {
-        throw std::invalid_argument("Invalid 'method' property value. Enabled only LEARN_DRUSE = 0, LEARN_EXUDATE = 1, LEARN_HEMORRHAGE = 2.");
-    }
-
-    std::cout << "Extraction of contours completed ... " << std::endl;
-
-    // show image and set listener for selecting contours area
-    std::string windowTitle = "Select true findings ( SELECT - right mouse button, DESELECT - left mouse button, CONTINUE - press any key ) ...";
-    cv::namedWindow(windowTitle, cv::WINDOW_NORMAL );
-    cv::resizeWindow(windowTitle, 500,500);
-    cv::moveWindow(windowTitle, 200,200);
-    for (int j = 0; j < contours.size(); ++j) {
-        drawContours( image, contours, j, cv::Scalar(255, 255, 255), 1, 8);
-    }
-    cv::imshow(windowTitle, image);
-    CallBackParams params = {contours, image, windowTitle};
-    cv::setMouseCallback(windowTitle, CallBackFunc, &params);
-    cv::waitKey(0);
-    cv::destroyWindow(windowTitle);
-    cv::waitKey(1);
-
-    std::cout << "Saving features of selected object." << std::endl;
-
-    // save features of selected elements to file
-    std::ofstream file;
-    file.open(output);
-
-    for (std::vector<int>::const_iterator i = params.selectedIndexes.begin(); i != params.selectedIndexes.end(); ++i) {
-        ContourFeatures druse = getContourFeature(contours, image, *i);
-
-        file << druse.area << ",";
-        file << druse.compactness << ",";
-        file << druse.avgBoundaryIntensity << ",";
-        file << druse.minBoundaryIntensity << ",";
-        file << druse.maxBoundaryIntensity << ",";
-        file << druse.meanHue << ",";
-        file << druse.meanSaturation << ",";
-        file << druse.meanIntensity << ",";
-        file << druse.meanGradientMagnitude << ",";
-        file << druse.energy << ",";
-        file << druse.entropy << ",";
-        file << druse.ratio << "\n";
-    }
-    file.close();
-
-    std::cout << "Features were successfully saved to file [" << output << "]." << std::endl;
-
-}
 
 /* @brief       Computes first eccentricity of ellipse.
  * @param       rectangle which describes ellipse
@@ -1070,7 +963,7 @@ cv::RotatedRect getMaculaEllipse(cv::Mat image, double ratio = std::numeric_limi
         // for each contour find rotated rectangles and ellipses
         for (int i = 0; i < contours.size(); i++) {
             if (contours[i].size() > 5) {
-                auto elem = fitEllipse(cv::Mat(contours[i]));
+                cv::RotatedRect elem = fitEllipse(cv::Mat(contours[i]));
 
                 // check if they are ellipses and not circles by eccentricity value
                 if (getEccentricity(elem) > MAX_MACULA_ECCENTRICITY) {
@@ -1133,7 +1026,7 @@ cv::RotatedRect getMaculaEllipse(cv::Mat image, double ratio = std::numeric_limi
 
         // get ellipses of each final group and the most numerous group
         std::vector<std::vector<cv::RotatedRect>> members(belong.size());
-        auto max = 0;
+        int max = 0;
         for (int l = 0; l < belong.size(); ++l) {
             members[belong[l]].push_back(minEllipse[l]);
             if (members[belong[l]].size() > members[max].size()) {
@@ -1142,7 +1035,7 @@ cv::RotatedRect getMaculaEllipse(cv::Mat image, double ratio = std::numeric_limi
         }
 
         // find the largest ellipse in the most numerous group
-        auto largest = 0;
+        int largest = 0;
         for (int i = 0; i < members[max].size(); i++) {
             if (members[max][i].size.area() > members[max][largest].size.area()) { largest = i; }
         }
@@ -1346,14 +1239,327 @@ std::vector<std::vector<cv::Point>> getHemorrhagesContours(cv::Mat image, double
     return contours;
 }
 
+/* @brief       Computes features of hemorrhage contour
+ * @param       contours is pointer to array of contours of hemorrhages
+ * @param       image, in which contours were found
+ * @param       index of contour in array
+ * @return      [area, eccentricity, perimeter, compactness, aspect ratio,
+ *              mean of candidate green channel, standart deviation of candidate green channel,
+ *              mean of candidate contrast enhancement green channel, standart deviation of candidate contrast enhancement green channel,
+ *              mean gradient magnitude, mean gradient of neighbor pixels,
+ *              mean hue, mean saturation, mean value,
+ *              standart deviation of hue, standart deviation of saturation, standart deviation of value,
+ *              entropy, energy, ratio]
+ */
+std::vector<double> getHemorrhageFeature(std::vector<std::vector<cv::Point>> contours, cv::Mat image, int index, double ratio = std::numeric_limits<double>::infinity()) {
+
+    // get background mask and rect which describes contour of hemorrhage
+    cv::Mat backgroundMask = getBackgroundMask(image, 0, 0);
+    cv::Rect hemorrhageRect = boundingRect(cv::Mat(contours[0]));
+
+    if (ratio == std::numeric_limits<double>::infinity()) {
+        std::vector<std::vector<cv::Point>> contours;
+        findContours(backgroundMask.clone(), contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
+        ratio = computeRatio(hemorrhageRect.size(), {660, 660});
+    }
+
+    // get green channel of image
+    std::vector<cv::Mat> bgrChannel;
+    split(image, bgrChannel);
+    cv::Mat greenChannel = bgrChannel[1];
+
+    // make mean color value of retina as background color value and process contrast enhancement
+    int retinaMeanColor = mean(greenChannel, backgroundMask)[0];
+    cv::Mat contrastEnhancementGreenChannel = cv::Mat(greenChannel.size(), CV_8UC1, retinaMeanColor);
+    greenChannel.copyTo(contrastEnhancementGreenChannel, backgroundMask);
+    cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(1, cv::Size(8 * ratio, 8 * ratio));
+    clahe->apply(contrastEnhancementGreenChannel, contrastEnhancementGreenChannel);
+
+    // intensity of image is simple grey color image
+    cv::Mat intensity;
+    cv::cvtColor(image, intensity, CV_BGR2GRAY);
+
+    // because of energy computing we image with all contours filled
+    cv::Mat contoursMask(image.size(), CV_8UC1, cv::Scalar(0, 0, 0));
+    for (int i = 0; i < contours.size(); i++) {
+        drawContours(contoursMask, contours, i, cv::Scalar(255, 255, 255), CV_FILLED, 8);
+    }
+
+    cv::Mat elementMask, elementContoursMask, elementImage, elementContoursImage;
+    elementMask = cv::Mat::zeros(image.size(), CV_8UC1);
+    elementContoursMask = cv::Mat::zeros(image.size(), CV_8UC1);
+    elementImage = cv::Mat::zeros(image.size(), CV_8UC1);
+
+    // compute sum of all pixels in element
+    cv::drawContours(elementMask, contours, index, cv::Scalar(255), CV_FILLED, 8);
+    contrastEnhancementGreenChannel.copyTo(elementImage, elementMask);
+    double area = cv::sum(elementImage)[0];
+
+    // compute ratio of the distance between foci of ellipse and its major axis length
+    cv::RotatedRect contourRect = fitEllipse(cv::Mat(contours[index]));
+    double  eccentricity = getEccentricity(contourRect);
+
+
+    // compute perimeter of contour
+    double perimeter = cv::arcLength(contours[index], true);
+
+    // compute compactness of element
+    double compactness = pow(perimeter, 2) / ( 4 * CV_PI * area);
+
+    // compute ratio of major axis length to minor axis length
+    double aspectRatio = contourRect.size.width / contourRect.size.height;
+
+    // mean and standard deviation value of all green channel pixels within the candidate region
+    cv::Scalar hemorrhageMean, hemorrhageStdDev;
+    cv::Mat hemorrhageGreenChannel;
+    greenChannel.copyTo(hemorrhageGreenChannel, elementMask);
+    meanStdDev(hemorrhageGreenChannel, hemorrhageMean, hemorrhageStdDev, backgroundMask);
+
+    // mean and standard deviation value of all green channel pixels within the candidate region
+    cv::Scalar hemorrhageCEMean, hemorrhageCEStdDev;
+    cv::Mat hemorrhageCEGreenChannel;
+    contrastEnhancementGreenChannel.copyTo(hemorrhageCEGreenChannel, elementMask);
+    meanStdDev(hemorrhageCEGreenChannel, hemorrhageCEMean, hemorrhageCEStdDev, backgroundMask);
+
+    // compute mean gradient magnitude of boundary pixels
+    cv::Mat grad_x, grad_y, abs_grad_x, abs_grad_y, grad;
+    cv::Mat druseIntensity;
+    intensity.copyTo(druseIntensity, elementMask);
+    // gradient X & Y
+    Sobel(druseIntensity, grad_x, CV_16S, 1, 0, 3, 1, 0, cv::BORDER_DEFAULT);
+    convertScaleAbs(grad_x, abs_grad_x);
+    Sobel(druseIntensity, grad_y, CV_16S, 0, 1, 3, 1, 0, cv::BORDER_DEFAULT);
+    convertScaleAbs(grad_y, abs_grad_y);
+    addWeighted(abs_grad_x, 0.5, abs_grad_y, 0.5, 0, grad);
+    double meanGradientMagnitude = cv::mean(grad, elementContoursMask)[0];
+
+    // compute mean gradient magnitude of neighbor pixels in a square region outside the hemorrhage region
+    cv::Mat squareRegionMask; squareRegionMask = cv::Mat::zeros(contrastEnhancementGreenChannel.size(), CV_8UC1);
+    cv::rectangle(squareRegionMask, {hemorrhageRect.x, hemorrhageRect.y}, {hemorrhageRect.x + hemorrhageRect.width, hemorrhageRect.y + hemorrhageRect.height}, 255, CV_FILLED);
+    cv::bitwise_xor(squareRegionMask, elementMask, squareRegionMask);
+    intensity.copyTo(druseIntensity, squareRegionMask);
+    // gradient X & Y
+    Sobel(druseIntensity, grad_x, CV_16S, 1, 0, 3, 1, 0, cv::BORDER_DEFAULT);
+    convertScaleAbs(grad_x, abs_grad_x);
+    Sobel(druseIntensity, grad_y, CV_16S, 0, 1, 3, 1, 0, cv::BORDER_DEFAULT);
+    convertScaleAbs(grad_y, abs_grad_y);
+    addWeighted(abs_grad_x, 0.5, abs_grad_y, 0.5, 0, grad);
+    double meanGradientNeighbourMagnitude = cv::mean(grad, elementContoursMask)[0];
+
+    // compute mean and standart deviation of hue, saturation and value of element
+    cv::Mat druseHSV, druseHSVChannels[3];
+    cv::cvtColor(elementImage, druseHSV, CV_BGR2HSV);
+    cv::split(druseHSV, druseHSVChannels);
+    cv::Scalar meanHue, stdDevHue, meanSaturation, stdDevSaturation, meanValue, stdDevValue;
+    meanStdDev(hemorrhageCEGreenChannel, meanHue, stdDevHue, backgroundMask);
+    meanStdDev(hemorrhageCEGreenChannel, meanSaturation, stdDevSaturation, backgroundMask);
+    meanStdDev(hemorrhageCEGreenChannel, meanValue, stdDevValue, backgroundMask);
+
+    // compute entropy, in other words measure of randomness
+    int histMax = 256;
+    double entropy = computeEntropy(intensity, histMax, elementMask);
+
+    // compute energy of candidate region in image
+    double energy = cv::sum(druseIntensity)[0] / cv::sum(contoursMask)[0];
+
+    return { area, eccentricity, perimeter, compactness, aspectRatio, hemorrhageMean[0], hemorrhageStdDev[0],
+             hemorrhageCEMean[0], hemorrhageCEStdDev[0], meanGradientMagnitude, meanGradientNeighbourMagnitude,
+             meanHue[0], meanSaturation[0], meanValue[0], stdDevHue[0], stdDevSaturation[0], stdDevValue[0], entropy, energy, ratio };
+}
+
+/* @brief       Checks if file already exists.
+ * @param       fileName is path to file
+ * @return      if exists true otherwise false
+ */
+bool fileExist(std::string *fileName) {
+    std::ifstream infile(*fileName);
+    return infile.good();
+}
+
+/* @brief       Computes features of selected contours from image and save it to file.
+ * @param       output is path to file
+ * @param       image, in which objects for selection are found
+ * @param       type of object, allowed values are LEARN_DRUSE = 0, LEARN_EXUDATE = 1, LEARN_HEMORRHAGE = 2
+ */
+void appendDatabase(cv::Mat image, int type, std::string output) {
+
+    std::vector<std::vector<cv::Point>> contours;
+    if(type == LEARN_DRUSE) {
+        contours = getDrusenContours(image);
+    } else if(type == LEARN_EXUDATE) {
+        contours = getExudatesContours(image);
+    } else if(type == LEARN_HEMORRHAGE) {
+        contours = getHemorrhagesContours(image);
+    } else {
+        throw std::invalid_argument("Invalid 'method' property value. Enabled only LEARN_DRUSE = 0, LEARN_EXUDATE = 1, LEARN_HEMORRHAGE = 2.");
+    }
+
+    std::cout << "Extraction of contours completed ... " << std::endl;
+
+    // show image and set listener for selecting contours area
+    std::string windowTitle = "Select true findings ( TRUE POSITIVE - right mouse button, FALSE POSITIVE - left mouse button, CONTINUE - press any key ) ...";
+    cv::namedWindow(windowTitle, cv::WINDOW_NORMAL );
+    cv::resizeWindow(windowTitle, 500,500);
+    cv::moveWindow(windowTitle, 200,200);
+    for (int j = 0; j < contours.size(); ++j) {
+        drawContours( image, contours, j, cv::Scalar(255, 255, 255), 1, 8);
+    }
+    cv::imshow(windowTitle, image);
+    CallBackParams params = {contours, image, windowTitle};
+    cv::setMouseCallback(windowTitle, CallBackFunc, &params);
+    cv::waitKey(0);
+    cv::destroyWindow(windowTitle);
+    cv::waitKey(1);
+
+    // save features of selected elements to file
+    std::ofstream file;
+    if(fileExist(&output)) {
+        file.open(output, std::fstream::app);
+    } else {
+        // if file doesn't exist, create it and insert header
+        file.open(output, std::fstream::app);
+        if(type == LEARN_EXUDATE || type == LEARN_DRUSE) {
+            file << DB_FILE_HEADER_1 << std::endl;
+        } else if(type == LEARN_HEMORRHAGE) {
+            file << DB_FILE_HEADER_2 << std::endl;
+        }
+    }
+
+    if(!file) {
+        std::cerr << "Could not open file [ " << output << " ]." << std::endl;
+        return;
+    } else {
+        std::cout << "Saving features of selected object to file [ " << output << " ] ..." << std::endl;
+    }
+
+    // write true positive object features to file, value in first column is 1
+    for (std::vector<int>::const_iterator i = params.positive.begin(); i != params.positive.end(); ++i) {
+        std::vector<double> features = {};
+        if(type == LEARN_EXUDATE || type == LEARN_DRUSE) {
+            features = getBrightObjectFeature(contours, image, *i);
+        } else if(type == LEARN_HEMORRHAGE) {
+            features = getHemorrhageFeature(contours, image, *i);
+        }
+
+        file << "1, ";
+        for (int j = 0; j < features.size(); ++j) {
+            file << std::setprecision(8) << features[j];
+            if( j < features.size() - 1) {
+                file << ", ";
+            } else {
+                file << "\n";
+            }
+        }
+    }
+
+    // write false positive object features to file, value in first column is -1
+    for (std::vector<int>::const_iterator i = params.negative.begin(); i != params.negative.end(); ++i) {
+        std::vector<double> features = {};
+        if(type == LEARN_EXUDATE || type == LEARN_DRUSE) {
+            features = getBrightObjectFeature(contours, image, *i);
+        } else if(type == LEARN_HEMORRHAGE) {
+            features = getHemorrhageFeature(contours, image, *i);
+        }
+
+        file << "-1, ";
+        for (int j = 0; j < features.size(); ++j) {
+            file << std::setprecision(8) << features[j];
+            if( j < features.size() - 1) {
+                file << ", ";
+            } else {
+                file << "\n";
+            }
+        }
+    }
+    file.close();
+
+    std::cout << "Features were successfully saved." << std::endl;
+}
+
+/* @brief       Splits string of float values separated by delimiter.
+ * @param       s is string to be splited
+ * @param       delimiter is substring in string which logically splits values
+ * @param       values is empty vector and will be filled by splitted float values
+ */
+void split(const std::string &s, char delimiter, std::vector<float> &values) {
+    std::stringstream ss(s);
+    std::string item;
+    while (std::getline(ss, item, delimiter)) {
+        values.push_back(std::stof(item));
+    }
+}
+
+/* @brief       Converts vector of float values to matrix.
+ * @param       vec is input vector
+ * @return      matrix of converted values
+ */
+cv::Mat convert(std::vector<std::vector<float>> vec) {
+    cv::Mat mat(vec.size(), vec.at(0).size(), CV_32FC1);
+    for(int i=0; i<mat.rows; ++i) {
+        for (int j = 0; j < mat.cols; ++j) {
+            mat.at<float>(i, j) = vec.at(i).at(j);
+        }
+    }
+    return mat;
+}
+
+/* @brief       Trains bayes classifier by input data and save generated model to file.
+ * @param       input is system path to file in which is stored local database of retina findings and their classification as true/false positive
+ * @param       outputFolder is system path to folder where statistical model will be saved as XML / YAML file
+ * @param       name of created file without extension
+ */
+void trainClassifier(std::string input, std::string outputFolder, std::string fileName) {
+    std::ifstream dataStream(input);
+
+    // get training data out of file
+    std::vector<std::vector<float>> trainData;
+    std::vector<float> labels;
+    if (dataStream.is_open())
+    {
+        std::string line;
+        // skip first line = header line
+        getline(dataStream, line);
+
+        // parse data from file to data array and labels array
+        while (getline(dataStream, line)) {
+            std::vector<float> parsedLine;
+            split(line, ',', parsedLine);
+            labels.push_back(parsedLine.front());
+            parsedLine.erase(parsedLine.begin());
+            trainData.push_back(parsedLine);
+        }
+        dataStream.close();
+    } else {
+        std::cerr << "Unable to open data file [" + input + "].";
+        return;
+    }
+
+    if(!fileExist(&outputFolder)) {
+        std::cerr << "Output folder  [ " + outputFolder + " ] does not exist.";
+        return;
+    }
+
+    if(!trainData.empty()) {
+
+        // train bayesclassifier and save it to file
+        cv::Mat trainingMat = convert(trainData);
+        float labelsArray[labels.size()];
+        std::copy(labels.begin(), labels.end(), labelsArray);
+        cv::Mat labelsMat(1, trainingMat.rows, CV_32SC1, labelsArray);
+        cv::Ptr<cv::ml::NormalBayesClassifier> bayes = cv::ml::NormalBayesClassifier::create();
+        bayes->train(trainingMat, cv::ml::ROW_SAMPLE, labelsMat);
+        bayes->save(outputFolder + "/" + fileName + ".xml");
+    } else {
+        std::cout << "There are no data in file [" + input + "]. Stopping ...";
+        return;
+    }
+}
 
 int main( int argc, char** argv ) {
-
     cv::Mat image;
     image = cv::imread(argv[1], 1);
-
     if(!image.data ) {
-        std::cout << "WARNING: No image data to process ..." << std::endl;
+        std::cerr << "WARNING: No image data to process ..." << std::endl;
         return -1;
     }
 
@@ -1361,13 +1567,11 @@ int main( int argc, char** argv ) {
     copyMakeBorder(image, image, 50, 50, 50, 50, cv::BORDER_CONSTANT, 0);
     showImage("image", image);
 
-    auto contours = getHemorrhagesContours(image);
-    for(size_t i = 0; i< contours.size(); i++ ) {
-        drawContours(image, contours, (int)i, cv::Scalar(87, 165, 154), 1, 1);
-    }
+    //appendDatabase(image, LEARN_DRUSE, DRUSE_FEATURE_DB_FILE);
 
-    showImage("hemorrhages", image);
+    //trainClassifier(argv[2], "/home/janko/ClionProjects/retinaDiseaseClasifier/model", "druse");
 
-    cv::waitKey(0);
+    //float result = bayes->predict(test_sample);
+
     return 0;
 }

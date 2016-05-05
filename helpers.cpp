@@ -6,27 +6,26 @@
     @version 1.0 16/3/16
 */
 
-#include <opencv2/imgproc/imgproc.hpp>
-#include <opencv2/highgui/highgui.hpp>
+#include <opencv2/core/cvdef.h>
+#include <opencv2/core/mat.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/highgui.hpp>
 #include "helpers.h"
-
-using namespace cv;
-using namespace std;
 
 int showImageCount = 0;
 
-void showImage(String title, Mat image){
+void showImage(std::string title, cv::Mat image){
     uchar row = (showImageCount) / 6;
     uchar col = (showImageCount) % 6;
     showImageCount++;
-    namedWindow(title, WINDOW_NORMAL );
+    cv::namedWindow(title, cv::WINDOW_NORMAL );
     //resizeWindow(title, 300,240);
-    moveWindow(title, 50 + 310 * col, 30 + 265 * row);
+    cv::moveWindow(title, 50 + 310 * col, 30 + 265 * row);
     imshow(title, image);
     cv::waitKey(10);
 }
 
-void showImage(Mat image, String title){
+void showImage(cv::Mat image, std::string title){
     showImage(title, image);
 }
 
