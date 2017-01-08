@@ -32,8 +32,10 @@ Usage: ./retinaDiseaseClasifier [ OPTIONS ... ] IMAGE
             Mandatory in combination with '-t'.
  -d PATH  	Set path to database files of property vectors of classified findings.
             Mandatory in combination with '-c' and '-t'. 
- -c [0-2] 	Manual classification of findings. Value specifies type of desired specifies: 0 = drusen, 1 = exudates, 2 = hemorrhages.
- -t [0-2] 	Reset classificator by new database. Value specifies type of desired specifies: 0 = drusen, 1 = exudates, 2 = hemorrhages.
+ -c [0-2] 	Manual classification of findings. 
+            Value specifies type of desired specifies: 0 = drusen, 1 = exudates, 2 = hemorrhages.
+ -t [0-2] 	Reset classificator by new database. 
+            Value specifies type of desired specifies: 0 = drusen, 1 = exudates, 2 = hemorrhages.
  ```
  
 ## License
