@@ -2,6 +2,8 @@
 
 This project implements algorithm for retinal diseases (Age-related macular degeneration, Diabetic retinopathy) classification based on images of the patient's retina (fundus images). 
 
+It uses  [OpenCV (Open Source Computer Vision)](http://opencv.org/downloads.html) library. 
+
 ## Installation
 
 ### 1. CMake, version 3.3 or later:
