@@ -4,6 +4,16 @@ This project implements algorithm for retinal diseases (Age-related macular dege
 
 It uses  [OpenCV (Open Source Computer Vision)](http://opencv.org/downloads.html) library. 
 
+## Examples
+
+Below is an example of what you can achieve with this project. On first image you see fundus with some exudates. Image has no special markings, it is just output from fundus camera with no metadata about eye or diseases. 
+
+##### Input fundus image:
+![alt tag](https://raw.githubusercontent.com/janmacek/retina-disease-classifier/master/examples/A-input.jpg)
+
+##### Output image (blue border means that yellow stuff is found - probably exudate and red border means that red stuff is found - probably hemorrhages):
+![alt tag](https://raw.githubusercontent.com/janmacek/retina-disease-classifier/master/examples/A-output.png)
+
 ## Installation
 
 ### 1. CMake, version 3.3 or later:
