@@ -11,7 +11,7 @@ Below is an example of what you can achieve with this project. On first image yo
 ##### Input fundus image:
 ![alt tag](https://raw.githubusercontent.com/janmacek/retina-disease-classifier/master/examples/A-input.jpg)
 
-##### Output image (blue border means that yellow stuff is found - probably exudate and red border means that red stuff is found - probably hemorrhages):
+##### Output image (blue border means that yellow stuff is found - probably exudate and red border means that red stuff is found - probably hemorrhage):
 ![alt tag](https://raw.githubusercontent.com/janmacek/retina-disease-classifier/master/examples/A-output.png)
 
 ## Installation
